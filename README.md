@@ -56,8 +56,8 @@ Official Stage 1 presale contract for the TipCryp ($TCM) ICO, deployed on Base m
 - **Live Product:** https://tipcryp.me
 - **ICO Site:** https://tipcryp.io
 - **Whitepaper:** https://tipcryp.io/whitepaper.html
-- **Telegram:** [Join Community]
-- **Twitter/X:** [Follow Us]
+- **Telegram:** https://t.me/+WtbDPLuRTLE4NTQx
+- **Twitter/X:** https://x.com/TipCrypio
 
 ## License
 
