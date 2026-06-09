@@ -62,6 +62,7 @@ contract TCMPresale is ReentrancyGuard {
     address public owner;
     address public pendingOwner;
     address public treasury;
+    address public pendingTreasury;
 
     IERC20 public tcmToken;
     IERC20 public usdtToken;
@@ -69,11 +70,6 @@ contract TCMPresale is ReentrancyGuard {
     AggregatorV3Interface public ethFeed;
     uint8 public ethFeedDecimals;
 
-    // Secondary oracle for manipulation detection.
-    // If both feeds diverge by more than MAX_ORACLE_DIVERGENCE_BPS the tx reverts.
-    AggregatorV3Interface public ethFeedSecondary;
-    uint8 public ethFeedSecondaryDecimals;
-    uint256 public constant MAX_ORACLE_DIVERGENCE_BPS = 200; // 2%
 
     uint256 public tgeTimestamp;
     bool public claimEnabled;
@@ -116,6 +112,7 @@ contract TCMPresale is ReentrancyGuard {
     event ClaimEnabled();
     event SalePaused(bool paused);
     event TreasuryUpdated(address indexed previous, address indexed newTreasury);
+    event TreasuryTransferInitiated(address indexed current, address indexed pending);
     event TgeTimestampUpdated(uint256 previous, uint256 updated);
 
     // -----------------------------------------------
@@ -128,8 +125,7 @@ contract TCMPresale is ReentrancyGuard {
         address _usdc,
         address _owner,
         address _treasury,
-        address _feed,
-        address _feedSecondary
+        address _feed
     ) {
         require(_tcm           != address(0), "ZERO_TCM");
         require(_usdt          != address(0), "ZERO_USDT");
@@ -137,9 +133,6 @@ contract TCMPresale is ReentrancyGuard {
         require(_owner         != address(0), "ZERO_OWNER");
         require(_treasury      != address(0), "ZERO_TREASURY");
         require(_feed          != address(0), "ZERO_FEED");
-        require(_feedSecondary != address(0), "ZERO_FEED_2");
-        require(_feed != _feedSecondary,      "FEEDS_IDENTICAL");
-
         owner    = _owner;
         treasury = _treasury;
 
@@ -168,15 +161,7 @@ contract TCMPresale is ReentrancyGuard {
         require(ethFeedDecimals >= 2,  "FEED_DECIMALS_TOO_LOW");
         require(ethFeedDecimals <= 18, "FEED_DECIMALS_TOO_HIGH");
 
-        {
-            (bool ok, bytes memory data) = _feedSecondary.staticcall(abi.encodeWithSignature("decimals()"));
-            ethFeedSecondaryDecimals = (ok && data.length == 32) ? abi.decode(data, (uint8)) : 8;
-        }
-        require(ethFeedSecondaryDecimals >= 2,  "FEED2_DECIMALS_TOO_LOW");
-        require(ethFeedSecondaryDecimals <= 18, "FEED2_DECIMALS_TOO_HIGH");
-
-        ethFeed          = AggregatorV3Interface(_feed);
-        ethFeedSecondary = AggregatorV3Interface(_feedSecondary);
+        ethFeed = AggregatorV3Interface(_feed);
 
         tgeTimestamp = 1798761600;
 
@@ -226,43 +211,17 @@ contract TCMPresale is ReentrancyGuard {
     }
 
     // -----------------------------------------------
-    // ETH PRICE ORACLE (dual-feed)
-    // Primary: Chainlink ETH/USD
-    // Secondary: independent Chainlink feed (e.g. ETH/USD from a different aggregator)
-    // Both feeds are validated independently. If they diverge by more than
-    // MAX_ORACLE_DIVERGENCE_BPS the transaction reverts, blocking any attempt
-    // to manipulate pricing via a single compromised feed.
+    // ETH PRICE ORACLE
     // -----------------------------------------------
 
-    function _validateFeed(
-        AggregatorV3Interface feed
-    ) internal view returns (uint256) {
-        (uint80 roundId, int256 a,, uint256 updatedAt, uint80 answeredInRound) =
-            feed.latestRoundData();
-        require(a > 0,                              "BAD_PRICE");
-        require(updatedAt <= block.timestamp,       "BAD_TIME");
-        require(block.timestamp - updatedAt < 3600, "STALE_PRICE");
-        require(answeredInRound >= roundId,          "STALE_ROUND");
-        return uint256(a);
-    }
-
     function _ethPrice() internal view returns (uint256) {
-        uint256 primary   = _validateFeed(ethFeed);
-        uint256 secondary = _validateFeed(ethFeedSecondary);
-
-        // Normalise both to 18 decimals for a fair comparison
-        uint256 p18 = primary   * (10 ** (18 - ethFeedDecimals));
-        uint256 s18 = secondary * (10 ** (18 - ethFeedSecondaryDecimals));
-
-        // Check divergence: |p18 - s18| / p18 <= MAX_ORACLE_DIVERGENCE_BPS / 10000
-        uint256 diff = p18 > s18 ? p18 - s18 : s18 - p18;
-        require(
-            diff * 10_000 <= p18 * MAX_ORACLE_DIVERGENCE_BPS,
-            "ORACLE_DIVERGENCE"
-        );
-
-        // Return primary in its native precision (used by investETH divisor)
-        return primary;
+        (uint80 roundId, int256 a,, uint256 updatedAt, uint80 answeredInRound) =
+            ethFeed.latestRoundData();
+        require(a > 0,                               "BAD_PRICE");
+        require(updatedAt <= block.timestamp,        "BAD_TIME");
+        require(block.timestamp - updatedAt < 90000, "STALE_PRICE");
+        require(answeredInRound >= roundId,           "STALE_ROUND");
+        return uint256(a);
     }
 
     // -----------------------------------------------
@@ -436,12 +395,19 @@ contract TCMPresale is ReentrancyGuard {
         emit SalePaused(p);
     }
 
-    function setTreasury(address newTreasury) external onlyOwner {
+    function initiateTreasuryTransfer(address newTreasury) external onlyOwner {
         require(newTreasury != address(0), "ZERO_ADDR");
         require(newTreasury != treasury,   "NO_CHANGE");
+        pendingTreasury = newTreasury;
+        emit TreasuryTransferInitiated(treasury, newTreasury);
+    }
+
+    function acceptTreasury() external {
+        require(msg.sender == pendingTreasury, "NOT_PENDING_TREASURY");
         address previous = treasury;
-        treasury = newTreasury;
-        emit TreasuryUpdated(previous, newTreasury);
+        treasury = pendingTreasury;
+        pendingTreasury = address(0);
+        emit TreasuryUpdated(previous, treasury);
     }
 
     function setTgeTimestamp(uint256 ts) external onlyOwner {
@@ -450,6 +416,12 @@ contract TCMPresale is ReentrancyGuard {
         uint256 previous = tgeTimestamp;
         tgeTimestamp = ts;
         emit TgeTimestampUpdated(previous, ts);
+    }
+
+    function recoverERC20(address token, uint256 amount) external onlyOwner {
+        require(token != address(0), "ZERO_ADDR");
+        require(token != address(tcmToken) || totalAllocated == 0, "TCM_ALLOCATED");
+        IERC20(token).safeTransfer(owner, amount);
     }
 
     // -----------------------------------------------
